@@ -1,4 +1,5 @@
 # requirements.txt
+python-multipart
 fastapi
 uvicorn[standard]
 python-dotenv
