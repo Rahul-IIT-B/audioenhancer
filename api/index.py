@@ -3,6 +3,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
 import os
 import io
+import json
 import uuid
 import whisper
 import google.auth
