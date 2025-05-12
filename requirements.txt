@@ -10,7 +10,6 @@ google-generativeai
 moviepy
 pydub
 requests
-streamlit
 # CPU-only PyTorch stack
 torch
 torchvision
