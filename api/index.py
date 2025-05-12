@@ -19,7 +19,6 @@ import torch
 from datetime import timedelta
 from dotenv import load_dotenv
 import google.generativeai as genai
-st.set_option('server.enableWatchdog', False)
 
 load_dotenv()
 
