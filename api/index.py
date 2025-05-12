@@ -7,6 +7,7 @@ import json
 import uuid
 import whisper
 import google.auth
+import streamlit as st
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 from google.oauth2.service_account import Credentials
@@ -25,7 +26,7 @@ load_dotenv()
 genai.configure(api_key=os.getenv("GOOGLE_GEMINI_API_KEY"))
 
 # Google Sheets setup
-sa_info = json.loads(os.getenv("GOOGLE_SA_JSON"))
+sa_info = st.secrets["GOOGLE_SA_JSON"]
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
 credentials = Credentials.from_service_account_info(sa_info, scopes=SCOPES)
 sheets_service = build('sheets', 'v4', credentials=credentials)
