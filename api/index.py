@@ -24,11 +24,9 @@ load_dotenv()
 genai.configure(api_key=os.getenv("GOOGLE_GEMINI_API_KEY"))
 
 # Google Sheets setup
-SERVICE_ACCOUNT_FILE = os.getenv("GOOGLE_SA_JSON_PATH")
+sa_info = json.loads(os.getenv("GOOGLE_SA_JSON"))
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
-credentials = Credentials.from_service_account_file(
-    SERVICE_ACCOUNT_FILE, scopes=SCOPES
-)
+credentials = Credentials.from_service_account_info(sa_info, scopes=SCOPES)
 sheets_service = build('sheets', 'v4', credentials=credentials)
 
 # TTS config
