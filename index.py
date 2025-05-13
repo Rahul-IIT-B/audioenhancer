@@ -82,22 +82,22 @@ def safe_tts_request(text: str) -> bytes:
 @app.post("/process-video")
 async def process_video(file: UploadFile = File(...)):
     # try: 
-    #     uid = str(uuid.uuid4())
-    #     filename = f"{uid}_{file.filename}"
-    #     path = os.path.join(INPUT_DIR, filename)
-    #     with open(path, "wb") as f:
-    #         f.write(await file.read())
-        
-    #     video = VideoFileClip(path)
-    #     raw_audio = path.replace('.mp4', '.wav')
-    #     video.audio.write_audiofile(raw_audio, logger=None)
-    #     video_no_audio = path.replace('.mp4', '_noaudio.mp4')
-    #     video.without_audio().write_videofile(video_no_audio, codec="libx264", audio_codec="aac", logger=None)
-        
-    #     model = whisper.load_model("base")
-    #     audio = whisper.load_audio(raw_audio).astype("float32")
-    #     result = model.transcribe(audio, word_timestamps=True)
-    #     segments = result['segments']
+    uid = str(uuid.uuid4())
+    filename = f"{uid}_{file.filename}"
+    path = os.path.join(INPUT_DIR, filename)
+    with open(path, "wb") as f:
+        f.write(await file.read())
+    
+    video = VideoFileClip(path)
+    raw_audio = path.replace('.mp4', '.wav')
+    video.audio.write_audiofile(raw_audio, logger=None)
+    video_no_audio = path.replace('.mp4', '_noaudio.mp4')
+    video.without_audio().write_videofile(video_no_audio, codec="libx264", audio_codec="aac", logger=None)
+    
+    model = whisper.load_model("base")
+    audio = whisper.load_audio(raw_audio).astype("float32")
+    result = model.transcribe(audio, word_timestamps=True)
+    segments = result['segments']
         
     #     # refine with Gemini
     #     prompt = (
@@ -166,7 +166,7 @@ async def process_video(file: UploadFile = File(...)):
     #         status_code=500,
     #         detail="Internal server error during video processing."
     #     )
-    return JSONResponse({"name": "Rahul"})
+    return JSONResponse({"segments": segments})
 
 # --- Endpoint: fetch-segments ---
 @app.get("/fetch-segments")
