@@ -1,3 +1,12 @@
+import logging
+
+# Configure root logger once
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+)
+logger = logging.getLogger(__name__)
+
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -72,80 +81,91 @@ def safe_tts_request(text: str) -> bytes:
 # --- Endpoint 1: process-video ---
 @app.post("/process-video")
 async def process_video(file: UploadFile = File(...)):
-    uid = str(uuid.uuid4())
-    filename = f"{uid}_{file.filename}"
-    path = os.path.join(INPUT_DIR, filename)
-    with open(path, "wb") as f:
-        f.write(await file.read())
-
-    video = VideoFileClip(path)
-    raw_audio = path.replace('.mp4', '.wav')
-    video.audio.write_audiofile(raw_audio, logger=None)
-    video_no_audio = path.replace('.mp4', '_noaudio.mp4')
-    video.without_audio().write_videofile(video_no_audio, codec="libx264", audio_codec="aac", logger=None)
-
-    model = whisper.load_model("base")
-    audio = whisper.load_audio(raw_audio).astype("float32")
-    result = model.transcribe(audio, word_timestamps=True)
-    segments = result['segments']
-
-    # refine with Gemini
-    prompt = (
-        "Refine the segments of the transcript below into a formal, coherent, "
-        "professional-tone version without any errors. Remove filler words but "
-        "preserve each segment’s original length.\n\n"
-        "Output one line per segment as: mm:ss <refined text>\n\n"
-    )
-    for seg in segments:
-        ts = format_timestamp(seg['start'])
-        prompt += f"{ts} {seg['text'].strip()}\n"
-    refined_lines = call_gemini(prompt).splitlines()
-
-    # write to Google Sheet
-    rows = [["Start", "End", "Original", "Refined"]]
-    for seg, line in zip(segments, refined_lines):
-        _, text = line.split(' ', 1)
-        rows.append([
-            format_timestamp(seg['start']),
-            format_timestamp(seg['end']),
-            seg['text'].strip(),
-            text
-        ])
-
-    sheet = sheets_service.spreadsheets().create(
-        body={'properties': {'title': os.path.splitext(file.filename)[0]}},
-        fields='spreadsheetId'
-    ).execute()
-    sheet_id = sheet['spreadsheetId']
-    # Set permissions to allow anyone with the link to edit
-    try:
-        drive_service = build('drive', 'v3', credentials=credentials)
-        drive_service.permissions().create(
-            fileId=sheet_id,
-            body={
-                'type': 'anyone',
-                'role': 'writer'
-            },
-            fields='id'
-        ).execute()
-    except HttpError as error:
-        print(f"An error occurred: {error}")
-        raise HTTPException(status_code=500, detail="Failed to set spreadsheet permissions")
-    sheets_service.spreadsheets().values().update(
-        spreadsheetId=sheet_id, range='A1', valueInputOption='RAW', body={'values': rows}
-    ).execute()
-
-    # save metadata for refresh
-    meta = {
-        'uuid': uid,
-        'noaudio': video_no_audio,
-        'segment_count': len(segments)
-    }
-    with open(os.path.join(INPUT_DIR, f"{sheet_id}_meta.json"), 'w') as m:
-        import json
-        json.dump(meta, m)
-
-    return JSONResponse({"spreadsheetId": sheet_id})
+    try: 
+        uid = str(uuid.uuid4())
+        filename = f"{uid}_{file.filename}"
+        path = os.path.join(INPUT_DIR, filename)
+        with open(path, "wb") as f:
+            f.write(await file.read())
+        
+        video = VideoFileClip(path)
+        raw_audio = path.replace('.mp4', '.wav')
+        video.audio.write_audiofile(raw_audio, logger=None)
+        video_no_audio = path.replace('.mp4', '_noaudio.mp4')
+        video.without_audio().write_videofile(video_no_audio, codec="libx264", audio_codec="aac", logger=None)
+        
+        model = whisper.load_model("base")
+        audio = whisper.load_audio(raw_audio).astype("float32")
+        result = model.transcribe(audio, word_timestamps=True)
+        segments = result['segments']
+        
+        # # refine with Gemini
+        # prompt = (
+        #     "Refine the segments of the transcript below into a formal, coherent, "
+        #     "professional-tone version without any errors. Remove filler words but "
+        #     "preserve each segment’s original length.\n\n"
+        #     "Output one line per segment as: mm:ss <refined text>\n\n"
+        # )
+        # for seg in segments:
+        #     ts = format_timestamp(seg['start'])
+        #     prompt += f"{ts} {seg['text'].strip()}\n"
+        # refined_lines = call_gemini(prompt).splitlines()
+        
+        # # write to Google Sheet
+        # rows = [["Start", "End", "Original", "Refined"]]
+        # for seg, line in zip(segments, refined_lines):
+        #     _, text = line.split(' ', 1)
+        #     rows.append([
+        #         format_timestamp(seg['start']),
+        #         format_timestamp(seg['end']),
+        #         seg['text'].strip(),
+        #         text
+        #     ])
+        
+        # sheet = sheets_service.spreadsheets().create(
+        #     body={'properties': {'title': os.path.splitext(file.filename)[0]}},
+        #     fields='spreadsheetId'
+        # ).execute()
+        # sheet_id = sheet['spreadsheetId']
+        # # Set permissions to allow anyone with the link to edit
+        # try:
+        #     drive_service = build('drive', 'v3', credentials=credentials)
+        #     drive_service.permissions().create(
+        #         fileId=sheet_id,
+        #         body={
+        #             'type': 'anyone',
+        #             'role': 'writer'
+        #         },
+        #         fields='id'
+        #     ).execute()
+        # except HttpError as error:
+        #     print(f"An error occurred: {error}")
+        #     raise HTTPException(status_code=500, detail="Failed to set spreadsheet permissions")
+        # sheets_service.spreadsheets().values().update(
+        #     spreadsheetId=sheet_id, range='A1', valueInputOption='RAW', body={'values': rows}
+        # ).execute()
+        
+        # # save metadata for refresh
+        # meta = {
+        #     'uuid': uid,
+        #     'noaudio': video_no_audio,
+        #     'segment_count': len(segments)
+        # }
+        # with open(os.path.join(INPUT_DIR, f"{sheet_id}_meta.json"), 'w') as m:
+        #     import json
+        #     json.dump(meta, m)
+        
+        # return JSONResponse({"spreadsheetId": sheet_id})
+    except Exception as e:
+        # This logs the full traceback
+        logger.exception("Error in process_video endpoint")
+        # Optionally capture more context
+        logger.error(f"Uploaded filename: {file.filename}, temp path: {path}")
+        # Return a generic 500 to the client
+        raise HTTPException(
+            status_code=500,
+            detail="Internal server error during video processing."
+        )
 
 # --- Endpoint: fetch-segments ---
 @app.get("/fetch-segments")
