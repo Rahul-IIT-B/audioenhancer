@@ -36,6 +36,15 @@ VOICE_ID = os.getenv("ELEVENLABS_VOICE_ID")
 MODEL_ID = "eleven_multilingual_v2"
 
 app = FastAPI()
+origins = ["*"]
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 INPUT_DIR = "./uploads"
 os.makedirs(INPUT_DIR, exist_ok=True)
 
