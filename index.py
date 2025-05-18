@@ -9,7 +9,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 from fastapi import FastAPI, Request, UploadFile, File, HTTPException
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import os
@@ -18,12 +18,10 @@ import json
 import uuid
 import whisper
 import warnings
-import pyttsx3
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 from google.oauth2.service_account import Credentials
-from moviepy import VideoFileClip, AudioFileClip, concatenate_videoclips, vfx
-from moviepy.video.fx import AccelDecel
+from moviepy import VideoFileClip
 from pydub import AudioSegment
 import requests
 from datetime import timedelta
