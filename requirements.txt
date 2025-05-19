@@ -10,3 +10,4 @@ pydub
 openai-whisper
 google-api-python-client
 google-auth
+google-ai-generativelanguage
