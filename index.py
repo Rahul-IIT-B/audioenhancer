@@ -1,34 +1,25 @@
-import logging
-import subprocess
+import logging, shutil, subprocess, os, io, json, uuid, whisper, warnings, requests, boto3
+from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi.responses import JSONResponse
+from fastapi.middleware.cors import CORSMiddleware
+from googleapiclient.discovery import build
+from googleapiclient.errors import HttpError
+from google.oauth2.service_account import Credentials
+from moviepy import VideoFileClip
+from pydub import AudioSegment
+from datetime import timedelta
+from dotenv import load_dotenv
+import google.generativeai as genai
+import boto3
 
+warnings.filterwarnings("ignore", module="whisper")
+warnings.filterwarnings("ignore", message=".*bytes read.*")
 # Configure root logger once
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s"
 )
 logger = logging.getLogger(__name__)
-
-from fastapi import FastAPI, Request, UploadFile, File, HTTPException
-from fastapi.responses import JSONResponse, StreamingResponse
-from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
-import os
-import io
-import json
-import uuid
-import whisper
-import warnings
-from googleapiclient.discovery import build
-from googleapiclient.errors import HttpError
-from google.oauth2.service_account import Credentials
-from moviepy import VideoFileClip
-from pydub import AudioSegment
-import requests
-from datetime import timedelta
-from dotenv import load_dotenv
-import google.generativeai as genai
-warnings.filterwarnings("ignore", module="whisper")
-warnings.filterwarnings("ignore", message=".*bytes read.*")
 
 load_dotenv()
 
@@ -55,6 +46,38 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+s3 = boto3.client(
+    "s3",
+    aws_access_key_id=os.getenv("AWS_ACCESS_KEY_ID"),
+    aws_secret_access_key=os.getenv("AWS_SECRET_ACCESS_KEY"),
+    region_name=os.getenv("AWS_REGION")
+)
+s3_bucket = os.getenv("S3_BUCKET")
+
+def upload_file(local_path: str, unique_filename: str = None):
+    try:
+        s3.upload_file(
+            Filename=local_path,
+            Bucket=s3_bucket,
+            Key=unique_filename,
+        )
+    except Exception as e:
+        return {"file": unique_filename, "status": "error", "detail": str(e)}
+
+    s3_url = f"https://{s3_bucket}.s3.amazonaws.com/{unique_filename}"
+    return {"file": unique_filename, "status": "success", "url": s3_url}
+
+def download_file(file_name: str, path: str = None):
+    try:
+        s3.download_file(
+            Bucket=s3_bucket,
+            Key=file_name,
+            Filename=path
+        )
+    except Exception as e:
+        return {"file": file_name, "status": "error", "detail": str(e)}
+    return {"file": file_name, "status": "success", "file_path": path}
 
 # --- Helper functions ---
 def format_timestamp(sec: float) -> str:
@@ -86,7 +109,7 @@ async def process_video(file: UploadFile = File(...)):
         uploads_dir = "./Data/Original_videos"
         os.makedirs(uploads_dir, exist_ok=True)
         path = os.path.join(uploads_dir, filename)
-        path = os.path.abspath(path).replace("\\", "/")
+        path = path.replace("\\", "/")
         with open(path, "wb") as f:
             f.write(await file.read())
         
@@ -104,38 +127,39 @@ async def process_video(file: UploadFile = File(...)):
         segments = result['segments']
         
         prompt = (
-            "Refine the segments of the transcript below into a formal, coherent, "
-            "professional-tone version without any errors. Remove filler words but "
-            "preserve each segment’s original length.\n\n"
+            "Refine the segments of the transcript below while retaining original authors words as much as possible."  
+            "Change only if there are filler words, incomplete sentences or meaning, underdefined concepts.\n\n"
             "Output one line per segment as: mm:ss <refined text>\n\n"
         )
 
         # Prepare the rows for the spreadsheet
         current_t = 0
-        rows = [["Start", "End", "New Start", "New End", "Original", "Refined", "Audio Length", "Video Length", "Flag"]]
+        rows = [["Start", "End", "New Start", "New End", "Original", "Refined", "Pause at end(sec)", "Audio Length", "Video Length", "Flag", "Video Speed flag", "Out of sync", "Additional comments"]]
         for seg in segments:
             if seg["start"] - current_t > 1:
                 start_ts = format_timestamp(current_t)
                 end_ts = format_timestamp(seg['start'])
                 duration_sec = seg['start'] - current_t
                 video_len = format_timestamp(duration_sec)
-                rows.append([start_ts, end_ts, start_ts, end_ts, "", "", video_len, video_len, ""])
+                rows.append([start_ts, end_ts, start_ts, end_ts, "", "", 0, video_len, video_len, "", "", "", ""])
             start_ts = format_timestamp(seg['start'])
             end_ts = format_timestamp(seg['end'])
             duration_sec = seg['end'] - seg['start']
             video_len = format_timestamp(duration_sec)
             prompt += f"{start_ts} {seg['text'].strip()}\n"
-            rows.append([start_ts, end_ts, "", "", seg['text'].strip(), "", "", video_len, ""])
+            rows.append([start_ts, end_ts, "", "", seg['text'].strip(), "", 0, "", video_len, "", "", "", ""])
             current_t = seg['end']
-        duration = VideoFileClip(path).duration
+        duration = video.duration
+        video.close()
         if current_t - duration > 1:
             start_ts = format_timestamp(current_t)
             end_ts = format_timestamp(duration)
             duration_sec = duration - current_t
             video_len = format_timestamp(duration_sec)
-            rows.append([start_ts, end_ts, start_ts, end_ts, "", "", video_len, video_len, ""])
+            rows.append([start_ts, end_ts, start_ts, end_ts, "", "", 0, video_len, video_len, "", "", "", ""])
 
         refined_lines = call_gemini(prompt).splitlines()
+        
 
         # Update the rows with refined text
         i = 1
@@ -181,6 +205,14 @@ async def process_video(file: UploadFile = File(...)):
         os.makedirs("./Data/metadata", exist_ok=True)
         with open(meta_path, 'w') as m:
             json.dump(meta, m)
+
+        # Upload the video to S3
+        print(upload_file(path, unique_filename=f"Original_videos/{filename}"))
+        print(upload_file(meta_path, unique_filename=f"metadata/{sheet_id}.json"))
+
+        os.remove(path)
+        os.remove(raw_audio)
+        os.remove(meta_path)
         
         return JSONResponse({"spreadsheetId": sheet_id})
     except Exception as e:
@@ -253,8 +285,8 @@ def process_segments_with_ffmpeg(segments, input_path, output_path):
             subprocess.run([
                 "ffmpeg", "-y", "-i", sped_seg, "-i", seg["audio_path"],
                 "-map", "0:v", "-map", "1:a",
-                "-c:v", "copy", "-c:a", "aac", "-b:a", "128k", "-ar", "44100",
-                "-shortest", final_seg
+                "-c:v", "copy", "-c:a", "aac", "-b:a", "128k", "-ar", "44100", 
+                final_seg
             ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         else:
             # Add silent audio if missing
@@ -289,23 +321,19 @@ def process_segments_with_ffmpeg(segments, input_path, output_path):
     subprocess.run(concat_command)
     return output_path
 
-# --- Endpoint: refresh-voiceover ---
-class RefreshRequest(BaseModel):
-    spreadsheetId: str
-    changedIndices: list[int]
-
 @app.post("/refresh-voiceover")
-async def refresh_voiceover(req: RefreshRequest):
-    sheetId = req.spreadsheetId
+async def refresh_voiceover(sheetId: str):
     # load metadata
     meta_path = os.path.join("./Data/metadata", f"{sheetId}.json")
-    if not os.path.exists(meta_path):
-        raise HTTPException(404, "Metadata not found")
+    os.makedirs("./Data/metadata", exist_ok=True)
+    print(download_file(f"metadata/{sheetId}.json", path=meta_path))
     with open(meta_path) as m:
         meta = json.load(m)
     uid = meta['uuid']
     path = meta['original_video']
-    count = meta['segment_count']
+
+    os.makedirs("./Data/Original_videos", exist_ok=True)
+    print(download_file(f"Original_videos/{path.split('/')[-1]}", path=path))
 
     tmp_base = os.path.join("Data/tmp", uid)
     cloned_path = os.path.join(tmp_base, "cloned")
@@ -332,17 +360,17 @@ async def refresh_voiceover(req: RefreshRequest):
         video_len = end - start
 
         audio_path = os.path.join(cloned_path, f"seg_{idx}.wav")
-        audio_path = os.path.abspath(audio_path).replace("\\", "/")
+        audio_path = audio_path.replace("\\", "/")
         refined = row[5]
 
         if refined != "":
-            if not os.path.exists(audio_path) or idx in req.changedIndices:
-                audio_bytes = safe_tts_request(refined)
-                audio = AudioSegment.from_file(io.BytesIO(audio_bytes), format='mp3')
-                audio.export(audio_path, format='wav')
+            audio_bytes = safe_tts_request(refined)
+            audio = AudioSegment.from_file(io.BytesIO(audio_bytes), format='mp3')
+            audio.export(audio_path, format='wav')
 
             audio_seg = AudioSegment.from_file(audio_path, format="wav")
             audio_len_sec = audio_seg.duration_seconds
+            audio_len_sec += float(row[6])
 
             if audio_len_sec > video_len * 1.02:
                 flag = "Slowed-down"
@@ -359,17 +387,17 @@ async def refresh_voiceover(req: RefreshRequest):
             updated_rows[idx][3] = format_timestamp(new_end)
             if idx + 1 < len(updated_rows):
                 updated_rows[idx + 1][2] = updated_rows[idx][3]
-            updated_rows[idx][6] = format_timestamp(audio_len_sec)
-            updated_rows[idx] = updated_rows[idx][:8] + [flag]
+            updated_rows[idx][7] = format_timestamp(audio_len_sec)
+            updated_rows[idx] = updated_rows[idx][:9] + [flag]
         else:
             factor = 1.0
             audio_path = None
             flag = "No change"
-            new_end = end
+            new_end = new_start + video_len
             updated_rows[idx][3] = format_timestamp(new_end)
             if idx + 1 < len(updated_rows):
                 updated_rows[idx + 1][2] = updated_rows[idx][3]
-            updated_rows[idx] = updated_rows[idx][:8] + [flag]
+            updated_rows[idx] = updated_rows[idx][:9] + [flag]
 
         segments.append({
             "start": start,
@@ -380,61 +408,18 @@ async def refresh_voiceover(req: RefreshRequest):
 
     # Update sheet
     sheets_service.spreadsheets().values().update(
-        spreadsheetId=sheetId, range='A2:I',
+        spreadsheetId=sheetId, range='A2:J',
         valueInputOption='RAW', body={'values': updated_rows}
     ).execute()
 
     final_video_path = path.replace("Original_videos", "Final_videos")
     os.makedirs("./Data/Final_videos", exist_ok=True)
     processed_path = process_segments_with_ffmpeg(segments, path, final_video_path)
+    final_s3 = upload_file(processed_path, unique_filename=f"Final_videos/{processed_path.split('/')[-1]}")
+    final_s3_url = final_s3['url']
+    os.remove(path)
+    os.remove(meta_path)
+    os.remove(processed_path)
+    shutil.rmtree(f"Data/tmp/{uid}", ignore_errors=True)
 
-    return JSONResponse({"Final_video_path": processed_path})
-
-@app.get("/stream_video")
-async def stream_video(request: Request, path: str):
-    if not os.path.exists(path):
-        raise HTTPException(status_code=404, detail="File not found")
-
-    file_size = os.path.getsize(path)
-    range_header = request.headers.get("range")
-
-    def iterfile(start: int = 0, end: int = file_size - 1):
-        with open(path, "rb") as f:
-            f.seek(start)
-            remaining = end - start + 1
-            while remaining > 0:
-                chunk_size = 4096 if remaining >= 4096 else remaining
-                data = f.read(chunk_size)
-                if not data:
-                    break
-                yield data
-                remaining -= len(data)
-
-    if range_header:
-        # Example: "bytes=0-1023"
-        start_str, end_str = range_header.strip().split("=")[-1].split("-")
-        start = int(start_str) if start_str else 0
-        end = int(end_str) if end_str else file_size - 1
-        content_length = end - start + 1
-        return StreamingResponse(
-            iterfile(start, end),
-            media_type="video/mp4",
-            status_code=206,
-            headers={
-                "Content-Range": f"bytes {start}-{end}/{file_size}",
-                "Accept-Ranges": "bytes",
-                "Content-Length": str(content_length),
-                "Content-Disposition": f"inline; filename={os.path.basename(path)}"
-            }
-        )
-
-    # No range header – send whole file
-    return StreamingResponse(
-        iterfile(),
-        media_type="video/mp4",
-        headers={
-            "Content-Length": str(file_size),
-            "Accept-Ranges": "bytes",
-            "Content-Disposition": f"inline; filename={os.path.basename(path)}"
-        }
-    )
+    return JSONResponse({"Final_s3_url": final_s3_url})
