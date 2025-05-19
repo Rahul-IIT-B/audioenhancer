@@ -1,16 +1,13 @@
-# requirements.txt
-logging
 python-multipart
+googleapis-common-protos
 fastapi
-pydantic
 uvicorn[standard]
 python-dotenv
-google-api-python-client
-google-auth
-googleapis-common-protos
-google-generativeai
+boto3
+requests
 moviepy
 pydub
-requests
-torch
-torchaudio
+openai-whisper
+google-api-python-client
+google-auth
+google-generative-ai
