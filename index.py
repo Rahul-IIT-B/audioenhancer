@@ -379,9 +379,7 @@ async def refresh_voiceover(sheetId: str):
             else:
                 flag = "No change"
 
-            factor = video_len / audio_len_sec if flag == "Slowed-down" else (
-                audio_len_sec / video_len if flag == "Fast-forwarded" else 1.0
-            )
+            factor = video_len / audio_len_sec if flag != "No change"  else 1.0
 
             new_end = new_start + audio_len_sec
             updated_rows[idx][3] = format_timestamp(new_end)
