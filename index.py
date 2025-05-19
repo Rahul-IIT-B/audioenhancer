@@ -102,24 +102,6 @@ async def process_video(file: UploadFile = File(...)):
         audio = whisper.load_audio(raw_audio).astype("float32")
         result = model.transcribe(audio, word_timestamps=True)
         segments = result['segments']
-
-        MIN_LENGTH = 10.0   # seconds
-
-        merged = []
-        buffer = segments[0].copy()
-
-        for seg in segments[1:]:
-            curr_len = buffer["end"] - buffer["start"]
-            if curr_len < MIN_LENGTH:
-                # merge into buffer
-                buffer["text"]   = buffer["text"].rstrip() + " " + seg["text"].lstrip()
-                buffer["end"]    = seg["end"]
-            else:
-                merged.append(buffer)
-                buffer = seg.copy()
-
-        merged.append(buffer)
-        segments = merged
         
         prompt = (
             "Refine the segments of the transcript below into a formal, coherent, "
