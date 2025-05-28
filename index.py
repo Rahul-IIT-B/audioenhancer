@@ -1,4 +1,5 @@
-import time, logging, shutil, subprocess, os, io, json, uuid, whisper, warnings, requests, boto3
+import time
+import logging, shutil, subprocess, os, io, json, uuid, whisper, warnings, requests, boto3
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -559,4 +560,4 @@ async def refresh_voiceover(sheetId: str):
     t5 = time.time()
     print(f"[Refresh] Total time taken = {t5-t0:.3f}s")
 
-    return JSONResponse({"Final_s3_url": processed_path})
+    return JSONResponse({"Final_s3_url": final_s3_url})
