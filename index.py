@@ -1,16 +1,14 @@
-import logging, shutil, subprocess, os, io, json, uuid, whisper, warnings, requests, boto3
+import time, logging, shutil, subprocess, os, io, json, uuid, whisper, warnings, requests, boto3
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 from google.oauth2.service_account import Credentials
-from moviepy import VideoFileClip
 from pydub import AudioSegment
 from datetime import timedelta
 from dotenv import load_dotenv
 import google.generativeai as genai
-import boto3
 
 warnings.filterwarnings("ignore", module="whisper")
 warnings.filterwarnings("ignore", message=".*bytes read.*")
@@ -100,10 +98,48 @@ def safe_tts_request(text: str) -> bytes:
     resp.raise_for_status()
     return resp.content
 
+def extract_audio_with_ffmpeg(video_path: str, audio_path: str):
+    """
+    Extracts the audio track from a video into a WAV file using ffmpeg.
+    This is much faster than MoviePy’s Python-level extraction.
+    """
+    # -y: overwrite output
+    # -i: input file
+    # -vn: no video
+    # -acodec pcm_s16le: uncompressed PCM 16-bit little-endian
+    # -ar 44100: 44.1 kHz sample rate
+    # -ac 1: mono
+    subprocess.run([
+        "ffmpeg", "-y",
+        "-i", video_path,
+        "-vn",
+        "-acodec", "pcm_s16le",
+        "-ar", "44100",
+        "-ac", "1",
+        audio_path
+    ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+def get_video_duration(path: str) -> float:
+    """
+    Returns the duration of the video at `path` in seconds, using ffprobe.
+    """
+    # -v error: only show fatal errors
+    # -show_entries format=duration: print only the duration
+    # -of default=noprint_wrappers=1:nokey=1: output the raw value
+    result = subprocess.run([
+        "ffprobe", "-v", "error",
+        "-show_entries", "format=duration",
+        "-of", "default=noprint_wrappers=1:nokey=1",
+        path
+    ], capture_output=True, text=True, check=True)
+    return float(result.stdout.strip())
+
 # --- Endpoint 1: process-video ---
 @app.post("/process-video")
 async def process_video(file: UploadFile = File(...)):
     try: 
+        t0 = time.time()
+        print(f"[1] Start upload @ {t0:.3f}")
         uid = str(uuid.uuid4())
         filename = file.filename.replace('.mp4', f"_{uid}.mp4")
         uploads_dir = "./Data/Original_videos"
@@ -112,25 +148,59 @@ async def process_video(file: UploadFile = File(...)):
         path = path.replace("\\", "/")
         with open(path, "wb") as f:
             f.write(await file.read())
-        
+        t1 = time.time()
+        print(f"[2] Saved video Δ {t1-t0:.3f}s")
+
         # Extract audio from video
-        video = VideoFileClip(path)
         audio_name = os.path.splitext(os.path.basename(path))[0] + ".wav"
         raw_audio = os.path.join("Data/Extracted_Audio", audio_name)
         os.makedirs("Data/Extracted_Audio", exist_ok=True)
-        video.audio.write_audiofile(raw_audio, logger=None)
-        
+        extract_audio_with_ffmpeg(path, raw_audio)
+        t2 = time.time()
+        print(f"[3] Audio extracted Δ {t2-t1:.3f}s")
+                
         # Transcribe audio
         model = whisper.load_model("turbo")
-        audio = whisper.load_audio(raw_audio).astype("float32")
-        result = model.transcribe(audio, word_timestamps=True)
-        segments = result['segments']
-        
-        prompt = (
-            "Refine the segments of the transcript below while retaining original authors words as much as possible."  
-            "Change only if there are filler words, incomplete sentences or meaning, underdefined concepts.\n\n"
-            "Output one line per segment as: mm:ss <refined text>\n\n"
+        t_load = time.time()
+        print(f"[4] Model loaded Δ {t_load-t2:.3f}s")
+        # audio = whisper.load_audio(raw_audio).astype("float32")
+        result = model.transcribe(
+            raw_audio,
+            no_speech_threshold=0.7,
+            # logprob_threshold=-0.8,
+            # compression_ratio_threshold=2.2
+            # condition_on_previous_text=False
         )
+        segments = result['segments']
+        t3 = time.time()
+        print(f"[5] Transcribed Δ {t3-t_load:.3f}s, segments: {len(segments)}")
+        
+        prompt = prompt = """
+            You are given a list of transcript segments, each prefixed by its timestamp in MM:SS format.  
+            Your task is to refine each segment individually, with these strict rules:
+
+            1. Preserve the exact number of segments.
+            – Do not delete, merge, or split any segments.
+            – If a segment contains only a filler word (e.g. “Okay.”, “Um,”) and no other content, remove the filler word and return the empty segment.
+
+            2. Minimal changes only:
+            – Remove only filler words (“um,” “uh,” “like,” “you know”) if they don’t add meaning.
+            – Correct obvious spelling mistakes or very minor grammar errors that would otherwise hinder readability.
+            – Do not rephrase or rewrite content that already makes sense.
+
+            3. Maintain timestamps:
+            – Output exactly one line per input segment.
+            – Each line must begin with the original timestamp (MM:SS), a space, then the refined text.
+
+            4. Examples:
+            – Input: 01:23 Okay.
+                Output: 01:23 Okay.
+            – Input: 02:45 I, uh, think we should go.
+                Output: 02:45 I think we should go.
+
+            ――――――  
+            Now refine the following segments:\n
+            """
 
         # Prepare the rows for the spreadsheet
         current_t = 0
@@ -149,16 +219,19 @@ async def process_video(file: UploadFile = File(...)):
             prompt += f"{start_ts} {seg['text'].strip()}\n"
             rows.append([start_ts, end_ts, "", "", seg['text'].strip(), "", 0, "", video_len, "", "", "", ""])
             current_t = seg['end']
-        duration = video.duration
-        video.close()
+        duration = get_video_duration(path)
         if current_t - duration > 1:
             start_ts = format_timestamp(current_t)
             end_ts = format_timestamp(duration)
             duration_sec = duration - current_t
             video_len = format_timestamp(duration_sec)
             rows.append([start_ts, end_ts, start_ts, end_ts, "", "", 0, video_len, video_len, "", "", "", ""])
+        t4 = time.time()
+        print(f"[6] Built prompt+rows Δ {t4-t3:.3f}s")
 
         refined_lines = call_gemini(prompt).splitlines()
+        t5 = time.time()
+        print(f"[7] Gemini returned Δ {t5-t4:.3f}s")
         
 
         # Update the rows with refined text
@@ -192,7 +265,9 @@ async def process_video(file: UploadFile = File(...)):
         sheets_service.spreadsheets().values().update(
             spreadsheetId=sheet_id, range='A1', valueInputOption='RAW', body={'values': rows}
         ).execute()
-        
+        t6 = time.time()
+        print(f"[8] Sheet updated Δ {t6-t5:.3f}s")
+
         # save metadata for refresh
         meta = {
             'uuid': uid,
@@ -205,6 +280,8 @@ async def process_video(file: UploadFile = File(...)):
         os.makedirs("./Data/metadata", exist_ok=True)
         with open(meta_path, 'w') as m:
             json.dump(meta, m)
+        t7 = time.time()
+        print(f"Total time taken = {t7-t0:.3f}s")
 
         # Upload the video to S3
         print(upload_file(path, unique_filename=f"Original_videos/{filename}"))
@@ -242,18 +319,21 @@ async def fetch_segments(sheetId: str):
     ]
     return JSONResponse({"segments": segments})
 
-def process_segments_with_ffmpeg(segments, input_path, output_path):
+def process_segments_with_ffmpeg(segments, input_path, output_path, srt_path):
+    t0 = time.time()
     uid = input_path.split('/')[-1].split('_')[-1].split('.')[0]
     tmp_base = os.path.join("Data/tmp", uid)
     tmp_raw = os.path.join(tmp_base, "raw")
     tmp_sped = os.path.join(tmp_base, "sped")
     tmp_final = os.path.join(tmp_base, "final")
+    srt_path = srt_path.replace("\\", "/")
     os.makedirs(tmp_raw, exist_ok=True)
     os.makedirs(tmp_sped, exist_ok=True)
     os.makedirs(tmp_final, exist_ok=True)
     segment_files = []
 
     for i, seg in enumerate(segments):
+        seg_start = time.time()
         raw_seg = os.path.join(tmp_raw, f"raw_{i}.mp4")
         sped_seg = os.path.join(tmp_sped, f"sped_{i}.mp4")
         final_seg = os.path.join(tmp_final, f"final_{i}.mp4")
@@ -301,28 +381,67 @@ def process_segments_with_ffmpeg(segments, input_path, output_path):
                 "-i", "anullsrc=r=48000:cl=stereo",
                 "-shortest", "-c:v", "copy", "-c:a", "aac", final_seg
             ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        seg_end = time.time()
+        print(f"[FFmpeg] segment {i} processed Δ {seg_end-seg_start:.3f}s")
+
+    t1 = time.time()
+    print(f"[FFmpeg] all segments done Δ {t1-t0:.3f}s")
 
     # 4. Concatenate segments with guaranteed audio
+    concat_start = time.time()
     concat_command = ["ffmpeg", "-y"]
     filter_inputs = ""
     for i, seg in enumerate(segment_files):
         concat_command += ["-i", seg]
         filter_inputs += f"[{i}:v][{i}:a]"
 
-    filter_str = f"{filter_inputs}concat=n={len(segment_files)}:v=1:a=1[outv][outa]"
+    # build a single filter_complex that first concat's then burns in subtitles
+    filter_complex = (
+        f"{filter_inputs}"
+        f"concat=n={len(segment_files)}:v=1:a=1[outv][outa];"
+        f"[outv]subtitles={srt_path}[vsub]"
+    )
 
     concat_command += [
-        "-filter_complex", filter_str,
-        "-map", "[outv]", "-map", "[outa]",
+        "-filter_complex", filter_complex,
+        # map the subtitled video and the concatenated audio
+        "-map", "[vsub]", "-map", "[outa]",
+        # encoding settings
         "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
-        "-c:a", "aac", "-b:a", "128k", output_path
+        "-c:a", "aac", "-b:a", "128k",
+        output_path
+    ]
+    concat_command += [
+        "-filter_complex", filter_complex,
+        # map the subtitled video and the concatenated audio
+        "-map", "[vsub]", "-map", "[outa]",
+        # encoding settings
+        "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
+        "-c:a", "aac", "-b:a", "128k",
+        output_path
     ]
 
-    subprocess.run(concat_command)
+    subprocess.run(concat_command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    concat_end = time.time()
+    print(f"[FFmpeg] concatenated Δ {concat_end-concat_start:.3f}s")
+    print(f"[FFmpeg] Total video processing Δ {concat_end-t0:.3f}s")
     return output_path
+
+def to_srt(ts: float) -> str:
+    """
+    Converts a timestamp in seconds to SRT format (HH:MM:SS,ms).
+    """
+    td = timedelta(seconds=ts)
+    m, s = divmod(td.seconds, 60)
+    h = m // 60
+    m = m % 60
+    ms = int((ts - int(ts)) * 1000)
+    return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
 
 @app.post("/refresh-voiceover")
 async def refresh_voiceover(sheetId: str):
+    t0 = time.time()
+    print(f"[Refresh] start @ {t0:.3f}")
     # load metadata
     meta_path = os.path.join("./Data/metadata", f"{sheetId}.json")
     os.makedirs("./Data/metadata", exist_ok=True)
@@ -331,12 +450,15 @@ async def refresh_voiceover(sheetId: str):
         meta = json.load(m)
     uid = meta['uuid']
     path = meta['original_video']
+    t1 = time.time()
+    print(f"[Refresh] metadata loaded Δ {t1-t0:.3f}s")
 
     os.makedirs("./Data/Original_videos", exist_ok=True)
     print(download_file(f"Original_videos/{path.split('/')[-1]}", path=path))
 
     tmp_base = os.path.join("Data/tmp", uid)
     cloned_path = os.path.join(tmp_base, "cloned")
+    srt_path = os.path.join(tmp_base, "captions.srt")
     os.makedirs(tmp_base, exist_ok=True)
     os.makedirs(cloned_path, exist_ok=True)
 
@@ -348,12 +470,16 @@ async def refresh_voiceover(sheetId: str):
     except HttpError as e:
         raise HTTPException(status_code=400, detail=str(e))
     values = resp.get('values', [])
-    
+    t2 = time.time()
+    print(f"[Refresh] sheet fetched Δ {t2-t1:.3f}s")
+
     # process segments
     updated_rows = values.copy()
     updated_rows[0][2] = format_timestamp(0)
     segments = []
+    srt_lines = []
     for idx, row in enumerate(updated_rows):
+        loop_i = time.time()
         start = sum(x * float(t) for x, t in zip([60, 1, 0.001], row[0].split(':')))
         end = sum(x * float(t) for x, t in zip([60, 1, 0.001], row[1].split(':')))
         new_start = sum(x * float(t) for x, t in zip([60, 1, 0.001], row[2].split(':')))
@@ -387,6 +513,7 @@ async def refresh_voiceover(sheetId: str):
                 updated_rows[idx + 1][2] = updated_rows[idx][3]
             updated_rows[idx][7] = format_timestamp(audio_len_sec)
             updated_rows[idx] = updated_rows[idx][:9] + [flag]
+            srt_lines.append(f"{idx+1}\n{to_srt(new_start)} --> {to_srt(new_end)}\n{refined}\n\n")
         else:
             factor = 1.0
             audio_path = None
@@ -403,21 +530,33 @@ async def refresh_voiceover(sheetId: str):
             "factor": factor,
             "audio_path": audio_path
         })
+        print(f"[Refresh] row {idx} processed Δ {time.time()-loop_i:.3f}s")
+
+    # Write SRT file
+    with open(srt_path, 'w') as srt_file:
+        srt_file.writelines(srt_lines)
+
+    t3 = time.time()
+    print(f"[Refresh] TTS + captions done Δ {t3-t2:.3f}s")
 
     # Update sheet
     sheets_service.spreadsheets().values().update(
         spreadsheetId=sheetId, range='A2:J',
         valueInputOption='RAW', body={'values': updated_rows}
     ).execute()
+    t4 = time.time()
+    print(f"[Refresh] sheet updated Δ {t4-t3:.3f}s")
 
     final_video_path = path.replace("Original_videos", "Final_videos")
     os.makedirs("./Data/Final_videos", exist_ok=True)
-    processed_path = process_segments_with_ffmpeg(segments, path, final_video_path)
+    processed_path = process_segments_with_ffmpeg(segments, path, final_video_path, srt_path)
     final_s3 = upload_file(processed_path, unique_filename=f"Final_videos/{processed_path.split('/')[-1]}")
     final_s3_url = final_s3['url']
     os.remove(path)
     os.remove(meta_path)
     os.remove(processed_path)
     shutil.rmtree(f"Data/tmp/{uid}", ignore_errors=True)
+    t5 = time.time()
+    print(f"[Refresh] Total time taken = {t5-t0:.3f}s")
 
-    return JSONResponse({"Final_s3_url": final_s3_url})
+    return JSONResponse({"Final_s3_url": processed_path})
