@@ -1,16 +1,10 @@
-# requirements.txt
-logging
-python-multipart
-fastapi
-pydantic
 uvicorn[standard]
-python-dotenv
-google-api-python-client
-google-auth
-googleapis-common-protos
-google-generativeai
-moviepy
-pydub
+boto3
+pandas
 requests
-torch
+fastapi
+google-generativeai
+python-dotenv
+deepgram-sdk
 torchaudio
+python-multipart
