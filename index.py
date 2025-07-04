@@ -95,6 +95,42 @@ def get_audio_duration(audio_path):
         logger.error(f"Failed to get audio duration for {audio_path}: {e}")
         return 0.0
 
+def extract_audio_with_ffmpeg(video_path: str, audio_path: str):
+    """
+    Extracts the audio track from a video into a WAV file using ffmpeg.
+    This is much faster than MoviePy’s Python-level extraction.
+    """
+    # -y: overwrite output
+    # -i: input file
+    # -vn: no video
+    # -acodec pcm_s16le: uncompressed PCM 16-bit little-endian
+    # -ar 44100: 44.1 kHz sample rate
+    # -ac 1: mono
+    subprocess.run([
+        "ffmpeg", "-y",
+        "-i", video_path,
+        "-vn",
+        "-acodec", "pcm_s16le",
+        "-ar", "44100",
+        "-ac", "1",
+        audio_path
+    ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+def get_video_duration(path: str) -> float:
+    """
+    Returns the duration of the video at `path` in seconds, using ffprobe.
+    """
+    # -v error: only show fatal errors
+    # -show_entries format=duration: print only the duration
+    # -of default=noprint_wrappers=1:nokey=1: output the raw value
+    result = subprocess.run([
+        "ffprobe", "-v", "error",
+        "-show_entries", "format=duration",
+        "-of", "default=noprint_wrappers=1:nokey=1",
+        path
+    ], capture_output=True, text=True, check=True)
+    return float(result.stdout.strip())
+
 # --- Endpoint 1: process-video ---
 @app.post("/process-video")
 async def process_video(file: UploadFile = File(...)):
