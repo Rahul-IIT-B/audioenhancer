@@ -618,7 +618,11 @@ async def refresh_voiceover(sheetId: str):
     os.makedirs(cloned_path, exist_ok=True)
 
     ref_audio_path = "Ref_voice/Anshul_Ref_Voice_trimmed.wav"  # Local path for TTS
-    # ref_audio_url = "https://audio-video-enhancer.s3.amazonaws.com/Ref_voice/Anshul_Ref_Voice_trimmed.wav"
+    ref_audio_url = "https://audio-video-enhancer.s3.amazonaws.com/Ref_voice/Anshul_Ref_Voice_trimmed.wav"
+
+    if not os.path.exists(ref_audio_path):
+        # Download the reference audio file
+        download_file(ref_audio_url, ref_audio_path)
 
     if not os.path.exists(original_path):
         # Download the original video file
