@@ -872,6 +872,6 @@ async def refresh_voiceover(sheetId: str):
 
     return JSONResponse({
         # "processed_path": processed_path,
-        "final_s3_url": final_s3_url,
+        "Final_s3_url": final_s3_url,
         "message": "Refresh completed successfully"
     })
