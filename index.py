@@ -617,17 +617,20 @@ async def refresh_voiceover(sheetId: str):
     os.makedirs("./Data/Final_videos", exist_ok=True) 
     os.makedirs(tmp_base, exist_ok=True)
     os.makedirs(cloned_path, exist_ok=True)
+    os.makedirs("Ref_voice", exist_ok=True)
+    if os.path.exists("Ref_voice"):
+        print("Ref_voice directory exists")
 
     ref_audio_path = "Ref_voice/Anshul_Ref_Voice_trimmed.wav"  # Local path for TTS
     ref_audio_url = "https://audio-video-enhancer.s3.amazonaws.com/Ref_voice/Anshul_Ref_Voice_trimmed.wav"
 
     if not os.path.exists(ref_audio_path):
         # Download the reference audio file
-        download_file(ref_audio_url, ref_audio_path)
+        print(download_file(ref_audio_url, ref_audio_path))
 
     if not os.path.exists(original_path):
         # Download the original video file
-        download_file(f"Original_videos/{filename}", original_path)
+        print(download_file(f"Original_videos/{filename}", original_path))
 
     # Load previous state from CSV (if exists)
     state_csv_path = os.path.join(tmp_base, "state.csv")
