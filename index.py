@@ -622,7 +622,7 @@ async def refresh_voiceover(sheetId: str):
         print("Ref_voice directory exists")
 
     ref_audio_path = "Ref_voice/Anshul_Ref_Voice_trimmed.wav"  # Local path for TTS
-    ref_audio_url = "https://audio-video-enhancer.s3.amazonaws.com/Ref_voice/Anshul_Ref_Voice_trimmed.wav"
+    ref_audio_url = "Ref_voice/Anshul_Ref_Voice_trimmed.wav"
 
     if not os.path.exists(ref_audio_path):
         # Download the reference audio file
