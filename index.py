@@ -9,6 +9,7 @@ from google.oauth2.service_account import Credentials
 from dotenv import load_dotenv
 from deepgram import DeepgramClient, PrerecordedOptions, FileSource
 import google.generativeai as genai
+import torch
 from voice_clone.src.chatterbox.tts import tts_generate_segment, get_tts_model
 import concurrent.futures
 import multiprocessing
@@ -706,7 +707,7 @@ async def refresh_voiceover(sheetId: str):
     # --- Parallel TTS Generation ---
     # Allow user to set TTS worker count via env or use all CPU cores
     num_workers = int('2', multiprocessing.cpu_count())
-    device = os.getenv("TTS_DEVICE", "cpu")  # Set to 'cuda' for GPU if available
+    device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"[TTS] Using {num_workers} workers on device: {device}")
     executor = concurrent.futures.ProcessPoolExecutor(
         max_workers=num_workers,
