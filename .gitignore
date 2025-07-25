@@ -1,3 +1,6 @@
 .env
 .venv
 Ref_voice
+__pycache__
+Data
+deepgram_response.json

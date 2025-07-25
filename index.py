@@ -171,7 +171,7 @@ async def process_video(file: UploadFile = File(...)):
         payload: FileSource = {"buffer": buffer_data}
         options = PrerecordedOptions(model="nova-3", smart_format=True, diarize=True)
         deepgram = DeepgramClient()
-        response = deepgram.listen.rest.v("1").transcribe_file(payload, options, timeout=120)
+        response = deepgram.listen.rest.v("1").transcribe_file(payload, options, timeout=300)
         dg_json = response.to_json()
         dg_data = json.loads(dg_json)
         # Save response for debugging
@@ -291,10 +291,13 @@ async def process_video(file: UploadFile = File(...)):
             rows.append([start_ts, end_ts, start_ts, end_ts, "", "", 0, video_len, video_len, "", "yes", video_len*2.8])
         t4 = time.time()
         print(f"[6] Built prompt+rows Δ {t4-t3:.3f}s")
+        for row in rows:
+            print(row[4])
 
         refined_lines = call_gemini(prompt).splitlines()
         t5 = time.time()
         print(f"[7] Gemini returned Δ {t5-t4:.3f}s")
+        print(refined_lines)
         
         # Update the rows with refined text
         i = 1
